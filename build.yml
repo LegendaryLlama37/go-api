@@ -1,0 +1,63 @@
+trigger: none
+
+variables:
+- group: kv-dev-Azure-Pipeline
+
+#build agent info
+jobs:
+- job: Build
+  displayName: Build
+  pool:
+    vmImage: 'ubuntu-latest'
+  steps:
+  - checkout: self
+
+# go version  
+  - task: GoTool@0
+    displayName: Use Go 1.20
+    inputs:
+      version: 1.20  # Ensure this matches the version you want to use
+
+# Bash command to create directory in stageing directory and copy all src to stageing dir
+  - script: |
+      mkdir -p $(Build.ArtifactStagingDirectory)/src
+      cp -R src/* $(Build.ArtifactStagingDirectory)/src/
+    displayName: Copy Go Source Files
+
+# go init
+  - script: |
+      cd $(Build.ArtifactStagingDirectory)/src
+      go mod init example.com/myapp || true
+      go mod tidy
+      go version
+    displayName: Initialize Go Module and Tidy Dependencies
+
+# build app, call it my app on local directory (src)
+  - script: |
+      cd $(Build.ArtifactStagingDirectory)/src
+      go build -o myapp .
+    displayName: Build Go Application
+
+# run compiled app with argument -greeting
+  - script: |
+      cd $(Build.ArtifactStagingDirectory)/src
+      ./myapp -servicenow_user "$(snowUsername)" -servicenow_password "$(snowPass)" -tenant_id "$(tenantID)" -client_id "$(azureSpokeAppID)" -client_secret "$(azureSpokeSecret)"
+
+    displayName: Run Go Application
+
+#copy binary and source code to artifacts for re-use or release
+  - task: ArchiveFiles@2
+    displayName: Archive Build Artifacts
+    inputs:
+      rootFolderOrFile: $(Build.ArtifactStagingDirectory)/src
+      includeRootFolder: false
+      archiveType: 'tar'
+      tarCompression: 'gzip'
+
+# publish artifact
+  - task: PublishBuildArtifacts@1
+    displayName: Publish Build Artifacts
+    inputs:
+      PathtoPublish: $(Build.ArtifactStagingDirectory)/src
+      ArtifactName: 'drop'
+      publishLocation: 'Container'
