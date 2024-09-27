@@ -1,9 +1,14 @@
-trigger: none
+trigger:
+  branches:
+    include:
+    - main
+#trigger: none
+# Azure Devops Pipeline
 
 variables:
 - group: kv-dev-Azure-Pipeline
 
-#build agent info
+# build agent info
 jobs:
 - job: Build
   displayName: Build
@@ -18,46 +23,67 @@ jobs:
     inputs:
       version: 1.20  # Ensure this matches the version you want to use
 
-# Bash command to create directory in stageing directory and copy all src to stageing dir
+# Bash command to create directory in staging directory and copy all src to staging dir
   - script: |
       mkdir -p $(Build.ArtifactStagingDirectory)/src
       cp -R src/* $(Build.ArtifactStagingDirectory)/src/
     displayName: Copy Go Source Files
 
-# go init
+# go init and install dependencies
   - script: |
       cd $(Build.ArtifactStagingDirectory)/src
       go mod init example.com/myapp || true
       go mod tidy
-      go version
+      go install github.com/swaggo/swag/cmd/swag@latest
+      go get -u github.com/swaggo/http-swagger
+      go get -u github.com/alecthomas/template
+      go get -u github.com/go-chi/chi/v5
+      go get -u github.com/dgrijalva/jwt-go
     displayName: Initialize Go Module and Tidy Dependencies
 
-# build app, call it my app on local directory (src)
+# Ensure Go bin directory is in the PATH to access swag command
+  - script: |
+      export PATH=$PATH:$(go env GOPATH)/bin
+      mkdir -p $(Build.ArtifactStagingDirectory)/src/swagger # Create swagger directory if not exists
+      cd $(Build.ArtifactStagingDirectory)/src
+      swag init --generalInfo ./main.go --output ./swagger
+    displayName: Generate Swagger Docs
+
+# Build app, call it my app on local directory (src)
   - script: |
       cd $(Build.ArtifactStagingDirectory)/src
-      go build -o myapp .
+      GOOS=windows GOARCH=amd64 go build -o api.exe .
+      go build -o api_linux .
     displayName: Build Go Application
 
-# run compiled app with argument -greeting
+# Run Go unit tests (this is the part that runs the tests)
   - script: |
       cd $(Build.ArtifactStagingDirectory)/src
-      ./myapp -servicenow_user "$(snowUsername)" -servicenow_password "$(snowPass)" -tenant_id "$(tenantID)" -client_id "$(azureSpokeAppID)" -client_secret "$(azureSpokeSecret)"
+      go test ./... -v
+#     go test ./api/... -v <-- testing!!
+    displayName: Run Go Tests (exluding main package)
 
-    displayName: Run Go Application
-
-#copy binary and source code to artifacts for re-use or release
-  - task: ArchiveFiles@2
-    displayName: Archive Build Artifacts
+# Optional: Run Go tests with coverage
+  - script: |
+      cd $(Build.ArtifactStagingDirectory)/src
+      go test ./... -coverprofile=coverage.out
+      go tool cover -html=coverage.out -o coverage.html
+    displayName: Run Go Tests with Coverage
+    
+# copy binary and source code to artifacts for re-use or release
+  - task: CopyFiles@2
+    displayName: 'Copy Files to: $(build.artifactstagingdirectory)/src/pkg/FunctionApp'
     inputs:
-      rootFolderOrFile: $(Build.ArtifactStagingDirectory)/src
+      SourceFolder: $(build.artifactstagingdirectory)/src
+      Contents: api.exe
+      TargetFolder: $(build.artifactstagingdirectory)/src/pkg/FunctionApp
+
+  - task: ArchiveFiles@2
+    displayName: Archive $(build.artifactstagingdirectory)/src/pkg/FunctionApp/
+    inputs:
+      rootFolderOrFile: $(build.artifactstagingdirectory)/src/pkg/FunctionApp/
       includeRootFolder: false
-      archiveType: 'tar'
-      tarCompression: 'gzip'
 
 # publish artifact
   - task: PublishBuildArtifacts@1
     displayName: Publish Build Artifacts
-    inputs:
-      PathtoPublish: $(Build.ArtifactStagingDirectory)/src
-      ArtifactName: 'drop'
-      publishLocation: 'Container'
